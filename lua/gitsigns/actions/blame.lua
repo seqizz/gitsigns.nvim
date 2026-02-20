@@ -309,6 +309,25 @@ local function on_cursor_moved(bufnr, blm_win, blame, commit_lines)
   end
 end
 
+--- Place signs in the main buffer sign column to indicate added (+) vs moved (~) lines.
+--- @param bufnr integer Main buffer
+--- @param blame table<integer,Gitsigns.BlameInfo?> Blame entries
+--- @param cur_sha string Abbreviated SHA of the commit under cursor
+--- @param added_lines? table<integer, true> Set of orig_lnum values added by the commit (nil = all added)
+local function place_commit_signs(bufnr, blame, cur_sha, added_lines)
+  local signs_blame = require('gitsigns.config').config.signs_blame
+  for i, info in pairs(blame) do
+    if info.commit.abbrev_sha == cur_sha then
+      local is_added = not added_lines or added_lines[info.orig_lnum]
+      local ty = is_added and 'add' or 'change'
+      api.nvim_buf_set_extmark(bufnr, ns_hl, i - 1, 0, {
+        sign_text = signs_blame[ty].text,
+        sign_hl_group = is_added and 'GitSignsAdd' or 'GitSignsChange',
+      })
+    end
+  end
+end
+
 --- @async
 --- @param bufnr integer
 --- @param blm_win integer
@@ -515,12 +534,63 @@ function M.blame(opts)
     end,
   })
 
-  -- Highlight the same commit under the cursor
+  -- Highlight the same commit under the cursor, with +/~ signs for added/moved
+  local last_signed_sha --- @type string?
+
   api.nvim_create_autocmd('CursorMoved', {
     buffer = blm_bufnr,
     group = group,
     callback = function()
       on_cursor_moved(bufnr, blm_win, blame.entries, commit_lines)
+
+      local lnum0 = api.nvim_win_get_cursor(blm_win)[1]
+      local info = blame.entries[lnum0]
+      if not info then
+        return
+      end
+
+      local sha = info.commit.sha
+      local cur_abbrev = info.commit.abbrev_sha
+
+      -- "Not Committed Yet" — treat all lines as added
+      if tonumber('0x' .. sha) == 0 then
+        place_commit_signs(bufnr, blame.entries, cur_abbrev, nil)
+        last_signed_sha = sha
+        return
+      end
+
+      -- Check if diff is already cached (false sentinel = all added)
+      if bcache.commit_added_lines and bcache.commit_added_lines[sha] ~= nil then
+        place_commit_signs(bufnr, blame.entries, cur_abbrev, bcache.commit_added_lines[sha] or nil)
+        last_signed_sha = sha
+        return
+      end
+
+      -- Avoid redundant async calls for the same commit
+      if last_signed_sha == sha then
+        return
+      end
+      last_signed_sha = sha
+
+      -- Async fetch the commit diff, then place signs on completion
+      async.run(function()
+        local added_lines = bcache:get_commit_added_lines(
+          sha, info.filename, info.previous_sha, info.previous_filename
+        )
+        async.schedule()
+
+        -- Stale-cursor guard: verify cursor is still on the same commit
+        if not api.nvim_buf_is_valid(blm_bufnr) or not api.nvim_win_is_valid(blm_win) then
+          return
+        end
+        local cur_lnum = api.nvim_win_get_cursor(blm_win)[1]
+        local cur_info = blame.entries[cur_lnum]
+        if not cur_info or cur_info.commit.sha ~= sha then
+          return
+        end
+
+        place_commit_signs(bufnr, blame.entries, cur_abbrev, added_lines)
+      end)
     end,
   })
 

@@ -35,6 +35,7 @@ local M = {
 --- @field git_obj            Gitsigns.GitObj
 --- @field blame?             Gitsigns.CacheEntry.Blame
 --- @field commits?           table<string,Gitsigns.CommitInfo?>
+--- @field commit_added_lines? table<string, table<integer, true>?>
 local CacheEntry = M.CacheEntry
 
 --- @param rev? string
@@ -57,6 +58,7 @@ function CacheEntry:invalidate(all)
   self.hunks_staged = nil
   self.blame = nil
   self.commits = nil
+  self.commit_added_lines = nil
   if all then
     -- The below doesn't need to be invalidated
     -- if the buffer changes
@@ -372,6 +374,67 @@ function CacheEntry:get_blame_times()
   end
 
   return blame.min_time, blame.max_time
+end
+
+--- Get the set of orig_lnum values that were added (not just moved) by a commit.
+--- Returns a table<integer, true> for added lines, or nil if all lines are added
+--- (initial commit / file creation).
+--- @async
+--- @param sha string Full commit SHA
+--- @param filename string File path in the commit
+--- @param previous_sha? string Parent commit SHA
+--- @param previous_filename? string File path in the parent commit
+--- @return table<integer, true>? added_lines Set of orig_lnum values added by this commit, nil means all added
+function CacheEntry:get_commit_added_lines(sha, filename, previous_sha, previous_filename)
+  self.commit_added_lines = self.commit_added_lines or {}
+
+  -- Use sentinel `false` to represent "all lines added" (initial commit / file creation).
+  -- This distinguishes it from "not yet cached" (key absent → nil).
+  local cached = self.commit_added_lines[sha]
+  if cached ~= nil then
+    return cached or nil -- convert false sentinel back to nil
+  end
+
+  if not previous_sha or not previous_filename then
+    -- Initial commit or file creation — all lines are added
+    self.commit_added_lines[sha] = false
+    return nil
+  end
+
+  local repo = self.git_obj.repo
+  local a = repo:get_show_text(previous_sha .. ':' .. previous_filename)
+  local b = repo:get_show_text(sha .. ':' .. filename)
+  local run_diff = require('gitsigns.diff')
+  local hunks = run_diff(a, b, false)
+
+  -- Build a multiset of removed line contents so we can detect moved lines.
+  -- A line in the added side whose content also appears in the removed side
+  -- was moved, not truly added.
+  local removed_counts = {} --- @type table<string, integer>
+  for _, hunk in ipairs(hunks) do
+    for lnum = hunk.removed.start, hunk.removed.start + hunk.removed.count - 1 do
+      local line = a[lnum] or ''
+      removed_counts[line] = (removed_counts[line] or 0) + 1
+    end
+  end
+
+  local added_set = {} --- @type table<integer, true>
+  for _, hunk in ipairs(hunks) do
+    for lnum = hunk.added.start, hunk.added.start + hunk.added.count - 1 do
+      local line = b[lnum] or ''
+      local count = removed_counts[line]
+      if count and count > 0 then
+        -- Content existed in removed lines — this line was moved
+        removed_counts[line] = count - 1
+      else
+        -- Content is genuinely new
+        added_set[lnum] = true
+      end
+    end
+  end
+
+  self.commit_added_lines[sha] = added_set
+  return added_set
 end
 
 function CacheEntry:destroy()

@@ -38,6 +38,10 @@
 --- | 'changedelete'
 --- | 'untracked'
 
+--- @alias Gitsigns.BlameSignType
+--- | 'add'
+--- | 'change'
+
 --- @alias Gitsigns.CurrentLineBlameFmtFun fun(user: string, info: table<string,any>): [string,string][]
 
 --- @class (exact) Gitsigns.CurrentLineBlameOpts : Gitsigns.BlameOpts
@@ -62,6 +66,7 @@
 --- @field signs table<Gitsigns.SignType,Gitsigns.SignConfig>
 --- @field signs_staged table<Gitsigns.SignType,Gitsigns.SignConfig>
 --- @field signs_staged_enable boolean
+--- @field signs_blame table<Gitsigns.BlameSignType,Gitsigns.SignConfig>
 --- @field count_chars table<string|integer,string>
 --- @field signcolumn boolean
 --- @field numhl boolean
@@ -284,6 +289,27 @@ M.schema = {
     Show signs for staged hunks.
 
     When enabled the signs defined in |git-config-signs_staged| are used.
+    ]],
+  },
+
+  signs_blame = {
+    type = 'table',
+    deep_extend = true,
+    default = {
+      add = { text = '+' },
+      change = { text = '~' },
+    },
+    default_help = [[{
+      add    = { text = '+' },
+      change = { text = '~' },
+    }]],
+    description = [[
+    Configuration for signs in the blame view.
+
+    These signs indicate whether a line was added by the commit (`add`)
+    or merely moved/unchanged (`change`).
+
+    See |gitsigns-config-signs|.
     ]],
   },
 
